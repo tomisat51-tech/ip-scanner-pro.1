@@ -14,9 +14,9 @@ function Log($msg) {
 }
 
 function Register-StartupTask {
-    param($name, $exe, $args, $workDir, $delay = 30)
+    param($name, $exe, $taskArgs, $workDir, $delay = 30)
 
-    $action  = New-ScheduledTaskAction -Execute $exe -Argument $args -WorkingDirectory $workDir
+    $action  = New-ScheduledTaskAction -Execute $exe -Argument $taskArgs -WorkingDirectory $workDir
     $trigger = New-ScheduledTaskTrigger -AtStartup
     $trigger.Delay = "PT${delay}S"
     $settings = New-ScheduledTaskSettingsSet `
