@@ -74,6 +74,43 @@ def scan_port(host: str, port: int, timeout: float, grab: bool) -> dict:
                 "service": KNOWN_SERVICES.get(port, "unknown"), "banner": ""}
 
 
+def ping_host(ip: str, timeout: float = 0.8) -> bool:
+    """Return True if host responds to TCP on common ports or ping."""
+    for port in (80, 443, 22, 445, 8080, 3389):
+        try:
+            with socket.create_connection((ip, port), timeout=timeout):
+                return True
+        except Exception:
+            pass
+    try:
+        param = "-n" if sys.platform == "win32" else "-c"
+        subprocess.check_call(
+            ["ping", param, "1", "-w", "800", ip] if sys.platform == "win32"
+            else ["ping", "-c", "1", "-W", "1", ip],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2
+        )
+        return True
+    except Exception:
+        return False
+
+
+def discover_hosts(subnet: str, threads: int = 100) -> list:
+    """Ping-sweep a /24 subnet, e.g. '192.168.1'. Returns list of live IPs."""
+    ips = [f"{subnet}.{i}" for i in range(1, 255)]
+    live = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as ex:
+        futures = {ex.submit(ping_host, ip): ip for ip in ips}
+        done, total = 0, len(futures)
+        for fut in concurrent.futures.as_completed(futures):
+            done += 1
+            ip = futures[fut]
+            print(f"\r  Odkrywanie hostów... {done}/{total}  ({ip})", end="", flush=True)
+            if fut.result():
+                live.append(ip)
+    print("\r" + " " * 60 + "\r", end="")
+    return sorted(live, key=lambda x: int(x.split(".")[-1]))
+
+
 def detect_os(host: str) -> dict:
     """Guess OS from ICMP TTL value via ping."""
     try:
@@ -196,6 +233,7 @@ def run_scan(host, port_spec, timeout=1.0, threads=100, grab=True):
 
 def main():
     parser = argparse.ArgumentParser(
+        prog="scanner.py",
         description="IP Scanner Pro",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
@@ -205,14 +243,42 @@ def main():
   python3 scanner.py 192.168.1.31 80,443 --csv results.csv
 """,
     )
-    parser.add_argument("host")
-    parser.add_argument("ports", help="ports / 'common' / range e.g. 1-1024")
+    parser.add_argument("host", help="hostname, IP, or subnet e.g. 192.168.1 for /24 sweep")
+    parser.add_argument("ports", nargs="?", default="common",
+                        help="ports / 'common' / range e.g. 1-1024 (ignored for subnet sweep)")
     parser.add_argument("-t", "--timeout",   type=float, default=1.0)
     parser.add_argument("-T", "--threads",   type=int,   default=100)
     parser.add_argument("--no-banner",       action="store_true")
     parser.add_argument("--json",            metavar="FILE", help="save results as JSON")
     parser.add_argument("--csv",             metavar="FILE", help="save results as CSV")
     args = parser.parse_args()
+
+    # Subnet sweep mode: host looks like "192.168.1" (3 octets)
+    parts = args.host.split(".")
+    if len(parts) == 3 and all(p.isdigit() for p in parts):
+        print(f"\n  {BOLD}{CYAN}Skanowanie sieci {args.host}.0/24{RESET}\n")
+        live = discover_hosts(args.host, args.threads)
+        if not live:
+            print(f"  {RED}Nie znaleziono aktywnych hostów.{RESET}\n")
+            return
+        print(f"  {GREEN}Znalezione hosty ({len(live)}):{RESET}\n")
+        for ip in live:
+            try:
+                name = socket.gethostbyaddr(ip)[0]
+            except Exception:
+                name = ""
+            label = f"  {DIM}→{RESET} {BOLD}{ip}{RESET}"
+            if name:
+                label += f"  {DIM}({name}){RESET}"
+            print(label)
+        print()
+        if args.json:
+            with open(args.json, "w") as f:
+                json.dump({"subnet": args.host + ".0/24",
+                           "scanned_at": datetime.now().isoformat(),
+                           "live_hosts": live}, f, indent=2)
+            print(f"  {GREEN}JSON saved:{RESET} {args.json}")
+        return
 
     ip, os_info, results = run_scan(
         args.host, args.ports, args.timeout, args.threads, not args.no_banner

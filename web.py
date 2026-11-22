@@ -15,6 +15,22 @@ HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>IP Scanner Pro</title>
 <style>
+  .tabs { display:flex; gap:4px; margin-bottom:24px; }
+  .tab  { padding:8px 20px; border-radius:6px; cursor:pointer; border:1px solid var(--border);
+          color:var(--muted); background:var(--surface); font-family:var(--font); font-size:13px; }
+  .tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .panel { display:none; }
+  .panel.active { display:block; }
+  .host-row { display:flex; align-items:center; justify-content:space-between;
+              padding:10px 14px; border-bottom:1px solid #1e2130; }
+  .host-row:last-child { border-bottom:none; }
+  .host-ip   { font-weight:600; color:var(--green); }
+  .host-name { color:var(--muted); font-size:12px; }
+  .btn-scan-host { background:#1e2130; color:var(--accent); border:1px solid var(--border);
+                   font-family:var(--font); font-size:12px; padding:5px 14px;
+                   border-radius:5px; cursor:pointer; }
+  .btn-scan-host:hover { background:var(--accent); color:#fff; }
+</style>
   :root {
     --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3e;
     --accent: #6c8ef5; --green: #4ade80; --red: #f87171;
@@ -79,6 +95,13 @@ HTML = r"""<!DOCTYPE html>
   <span>TCP port scanner · OS detection · JSON/CSV export</span>
 </header>
 <main>
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('scan')">Skan portów</button>
+    <button class="tab"        onclick="switchTab('discover')">Odkryj sieć</button>
+  </div>
+
+  <!-- PANEL: skan portów -->
+  <div class="panel active" id="panel-scan">
   <div class="card">
     <div class="row">
       <div>
@@ -105,6 +128,7 @@ HTML = r"""<!DOCTYPE html>
     <div id="status"></div>
   </div>
 
+  </div> <!-- end panel-scan card -->
   <div class="card" id="results" style="display:none">
     <div class="os-row" id="osInfo"></div>
     <div class="summary" id="summary"></div>
@@ -119,6 +143,31 @@ HTML = r"""<!DOCTYPE html>
       <button class="btn-export" onclick="exportCSV()">Pobierz CSV</button>
     </div>
   </div>
+  </div> <!-- end panel-scan -->
+
+  <!-- PANEL: odkryj sieć -->
+  <div class="panel" id="panel-discover">
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>Podsieć (pierwsze 3 oktety)</label>
+        <input id="subnet" type="text" placeholder="192.168.1" value="192.168.1">
+        <div class="hint">Przeskanuje 192.168.1.1 – 192.168.1.254</div>
+      </div>
+      <div>
+        <label>Wątki</label>
+        <input id="dthreads" type="number" value="100" min="1" max="500">
+      </div>
+    </div>
+    <button id="discoverBtn" onclick="startDiscover()">Odkryj hosty</button>
+    <div id="dstatus"></div>
+  </div>
+  <div class="card" id="discover-results" style="display:none">
+    <div class="summary" id="dsummary"></div>
+    <div id="host-list"></div>
+  </div>
+  </div> <!-- end panel-discover -->
+
 </main>
 
 <script>
@@ -208,6 +257,60 @@ function download(name, content, type) {
 }
 
 document.addEventListener('keydown', e => { if (e.key === 'Enter') startScan(); });
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['scan','discover'][i]===name));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-'+name).classList.add('active');
+}
+
+async function startDiscover() {
+  const subnet  = document.getElementById('subnet').value.trim();
+  const threads = document.getElementById('dthreads').value;
+  if (!subnet) return;
+  const btn = document.getElementById('discoverBtn');
+  btn.disabled = true;
+  document.getElementById('dstatus').textContent = 'Skanowanie sieci ' + subnet + '.0/24 — może potrwać 30–60 sekund...';
+  document.getElementById('discover-results').style.display = 'none';
+  try {
+    const r = await fetch(`/discover?subnet=${encodeURIComponent(subnet)}&threads=${threads}`);
+    const d = await r.json();
+    if (d.error) { document.getElementById('dstatus').textContent = 'Błąd: ' + d.error; return; }
+    renderDiscover(d);
+    document.getElementById('dstatus').textContent = '';
+  } catch(e) {
+    document.getElementById('dstatus').textContent = 'Błąd: ' + e;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderDiscover(d) {
+  document.getElementById('dsummary').innerHTML = `
+    <div class="stat"><span class="stat-val open-val">${d.live_hosts.length}</span><span class="stat-lbl">aktywnych hostów</span></div>
+    <div class="stat"><span class="stat-val" style="color:var(--muted)">254</span><span class="stat-lbl">sprawdzonych</span></div>
+  `;
+  const list = document.getElementById('host-list');
+  if (!d.live_hosts.length) {
+    list.innerHTML = '<div style="color:var(--muted);padding:16px">Nie znaleziono aktywnych hostów.</div>';
+  } else {
+    list.innerHTML = d.live_hosts.map(h => `
+      <div class="host-row">
+        <div>
+          <span class="host-ip">${escHtml(h.ip)}</span>
+          ${h.hostname ? `<span class="host-name">  ${escHtml(h.hostname)}</span>` : ''}
+        </div>
+        <button class="btn-scan-host" onclick="scanFromDiscover('${escHtml(h.ip)}')">Skanuj porty →</button>
+      </div>`).join('');
+  }
+  document.getElementById('discover-results').style.display = 'block';
+}
+
+function scanFromDiscover(ip) {
+  document.getElementById('host').value = ip;
+  switchTab('scan');
+  startScan();
+}
 </script>
 </body>
 </html>
@@ -222,6 +325,27 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self._send(200, "text/html", HTML.encode())
+        elif parsed.path == "/discover":
+            qs = parse_qs(parsed.query)
+            subnet  = qs.get("subnet",  [""])[0].strip()
+            threads = int(qs.get("threads", ["100"])[0])
+            if not subnet or len(subnet.split(".")) != 3:
+                self._json({"error": "podaj podsieć w formacie 192.168.1"})
+                return
+            try:
+                live_ips = sc.discover_hosts(subnet, threads)
+                hosts = []
+                for ip in live_ips:
+                    try:
+                        name = __import__("socket").gethostbyaddr(ip)[0]
+                    except Exception:
+                        name = ""
+                    hosts.append({"ip": ip, "hostname": name})
+                self._json({"subnet": subnet + ".0/24",
+                            "scanned_at": __import__("datetime").datetime.now().isoformat(),
+                            "live_hosts": hosts})
+            except Exception as e:
+                self._json({"error": str(e)})
         elif parsed.path == "/scan":
             qs = parse_qs(parsed.query)
             host    = qs.get("host",    [""])[0].strip()
